@@ -8,6 +8,7 @@ A background daemon that monitors your Obsidian vault and executes Claude Code t
 |---------|-------------|
 | **Task Queue** | Drop markdown files in `Tasks/Inbox/` for autonomous execution |
 | **@agent Commands** | Write `@agent <instruction>` anywhere in vault for inline AI assistance |
+| **Scheduled Tasks** | Cron-based scheduling with SwiftUI editor for recurring automation |
 | **Menubar App** | Native macOS menubar app for status, pause/resume, and manual triggers |
 | **Sync-Safe** | Debounced file watching to avoid conflicts with Obsidian sync |
 
@@ -119,6 +120,7 @@ After setup, the daemon runs automatically on login.
 | **View Tasks** | Opens Tasks folder in Finder |
 | **Open Vault** | Opens vault folder in Finder |
 | **Force Scan** | Immediate @agent scan |
+| **Schedules** | Create, edit, enable/disable scheduled tasks |
 | **Pause/Resume** | Toggle daemon |
 | **Change Vault** | Reconfigure vault location |
 | **Quit** | Stop menubar app (daemon continues) |
@@ -208,6 +210,70 @@ Research the latest developments in MCP servers...
 ```
 
 Answer the questions and save - daemon will retry automatically.
+
+---
+
+## Scheduled Tasks
+
+Run Claude prompts automatically on a schedule. Create recurring automations like daily email sync, weekly vault organization, or monthly reports.
+
+### Creating a Schedule
+
+1. Click the menubar icon (◉)
+2. Go to **Schedules → New Schedule...**
+3. Enter a name and Claude prompt
+4. Select frequency (Hourly / Daily / Weekly / Monthly / Custom)
+5. Click **Create**
+
+### Schedule Options
+
+| Preset | Description | Example Cron |
+|--------|-------------|--------------|
+| **Hourly** | Run at a specific minute each hour | `30 * * * *` (at :30) |
+| **Daily** | Run at a specific time each day | `0 9 * * *` (9:00 AM) |
+| **Weekly** | Run on a specific day and time | `0 9 * * 1` (Monday 9 AM) |
+| **Monthly** | Run on a specific day of month | `0 9 1 * *` (1st at 9 AM) |
+| **Custom** | Full cron expression | `*/15 * * * *` (every 15 min) |
+
+### How It Works
+
+1. Daemon loads schedules from `~/.vault-daemon-schedules.json`
+2. At the scheduled time, creates a task file in `Tasks/Inbox/`
+3. Task file is named `[scheduled] Schedule Name.md`
+4. Normal task processing takes over from there
+
+### Managing Schedules
+
+From the menubar **Schedules** submenu:
+- **● Schedule Name** - Enabled schedule (click for submenu)
+- **○ Schedule Name** - Disabled schedule
+- **Enable/Disable** - Toggle without deleting
+- **Edit...** - Modify name, prompt, or timing
+- **Delete** - Remove schedule permanently
+
+### Schedule File Format
+
+Schedules are stored in `~/.vault-daemon-schedules.json`:
+
+```json
+{
+  "schedules": [
+    {
+      "id": "uuid",
+      "name": "Daily Email Sync",
+      "prompt": "Check my email and summarize important messages",
+      "cron": "0 9 * * *",
+      "enabled": true,
+      "lastRun": "2026-01-16T09:00:00Z",
+      "createdAt": "2026-01-15T10:00:00Z"
+    }
+  ]
+}
+```
+
+### Hot Reload
+
+The daemon watches the schedules file for changes. Edit it directly or use the menubar app - changes take effect immediately without restart.
 
 ---
 
@@ -393,6 +459,7 @@ rm -rf "/Applications/Vault Daemon.app"
 # Remove state files
 rm ~/.vault-daemon-state.json
 rm ~/.vault-daemon-config.json
+rm ~/.vault-daemon-schedules.json
 
 # Delete the repo
 rm -rf /path/to/obsidian-vault-daemon
