@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+bun.lock
+
+# Build artifacts
+menubar-app/.build/
+menubar-app/VaultDaemon
+menubar-app/VaultDaemon.app/
+*.app
+
+# Logs
+*.log
+
+# Config (user-specific)
+config.json
+
+# State files
+.vault-daemon-state.json
+.vault-daemon-config.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# LaunchAgent (generated per-user)
+*.plist

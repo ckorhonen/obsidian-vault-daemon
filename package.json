@@ -1,0 +1,12 @@
+{
+  "name": "vault-daemon",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run daemon.ts",
+    "dev": "bun run --watch daemon.ts"
+  },
+  "dependencies": {
+    "chokidar": "^3.5.3"
+  }
+}

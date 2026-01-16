@@ -1,0 +1,30 @@
+{
+  "vault_path": "auto",
+  "log_path": "auto",
+  "log_max_size_mb": 1,
+  "state_path": "auto",
+
+  "tasks": {
+    "enabled": true,
+    "debounce_ms": 5000,
+    "max_concurrent": 2
+  },
+
+  "agent_tags": {
+    "enabled": true,
+    "scan_interval_ms": 180000,
+    "debounce_ms": 30000,
+    "ignore_patterns": [
+      "Tasks/**",
+      ".obsidian/**",
+      "**/node_modules/**",
+      "**/.git/**"
+    ]
+  },
+
+  "claude": {
+    "command": "auto",
+    "args": ["--dangerously-skip-permissions"],
+    "timeout_ms": 300000
+  }
+}
