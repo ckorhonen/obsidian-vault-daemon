@@ -18,11 +18,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var refreshTimer: Timer?
     private var setupWindowController: NSWindowController?
+    private var scheduleWindowController: NSWindowController?
 
     // State
     private var daemonState: DaemonState?
     private var isDaemonRunning = false
     private var isConfigured = false
+    private var schedules: [Schedule] = []
 
     // Paths
     private let configPath = URL(fileURLWithPath: NSHomeDirectory())
@@ -31,6 +33,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         .appendingPathComponent(".vault-daemon-state.json")
     private let logPath = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Logs/vault-daemon.log")
+    private let schedulesPath = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent(".vault-daemon-schedules.json")
     private let launchAgentLabel = "com.vault-daemon"
     private let launchAgentPath: URL
 
@@ -57,6 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Normal operation
             updateIcon(state: .idle)
+            loadSchedules()
             setupMenu()
             loadState()
             checkDaemonStatus()
@@ -89,6 +94,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let data = try? encoder.encode(newConfig) else { return }
         try? data.write(to: configPath)
         isConfigured = true
+    }
+
+    // MARK: - Schedules
+
+    private func loadSchedules() {
+        guard let data = try? Data(contentsOf: schedulesPath),
+              let schedulesFile = try? JSONDecoder().decode(SchedulesFile.self, from: data) else {
+            schedules = []
+            return
+        }
+        schedules = schedulesFile.schedules
+    }
+
+    private func saveSchedules() {
+        let schedulesFile = SchedulesFile(schedules: schedules)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        guard let data = try? encoder.encode(schedulesFile) else { return }
+        try? data.write(to: schedulesPath)
+    }
+
+    private func addSchedule(_ schedule: Schedule) {
+        schedules.append(schedule)
+        saveSchedules()
+        setupMenu()
+    }
+
+    private func updateSchedule(_ schedule: Schedule) {
+        if let index = schedules.firstIndex(where: { $0.id == schedule.id }) {
+            schedules[index] = schedule
+            saveSchedules()
+            setupMenu()
+        }
+    }
+
+    private func deleteSchedule(id: String) {
+        schedules.removeAll { $0.id == id }
+        saveSchedules()
+        setupMenu()
+    }
+
+    private func toggleSchedule(id: String) {
+        if let index = schedules.firstIndex(where: { $0.id == id }) {
+            schedules[index].enabled.toggle()
+            saveSchedules()
+            setupMenu()
+        }
     }
 
     // MARK: - Setup Window
@@ -492,6 +544,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             menu.addItem(NSMenuItem.separator())
 
+            // Schedules submenu
+            let schedulesMenu = NSMenu()
+
+            // Add "New Schedule..." at top
+            let newScheduleItem = NSMenuItem(title: "New Schedule...", action: #selector(showScheduleEditor), keyEquivalent: "n")
+            newScheduleItem.target = self
+            schedulesMenu.addItem(newScheduleItem)
+
+            if !schedules.isEmpty {
+                schedulesMenu.addItem(NSMenuItem.separator())
+
+                // List existing schedules
+                for schedule in schedules {
+                    let scheduleSubmenu = NSMenu()
+
+                    // Enable/Disable toggle
+                    let toggleItem = NSMenuItem(
+                        title: schedule.enabled ? "Disable" : "Enable",
+                        action: #selector(toggleScheduleAction(_:)),
+                        keyEquivalent: ""
+                    )
+                    toggleItem.target = self
+                    toggleItem.representedObject = schedule.id
+                    scheduleSubmenu.addItem(toggleItem)
+
+                    // Edit
+                    let editItem = NSMenuItem(title: "Edit...", action: #selector(editScheduleAction(_:)), keyEquivalent: "")
+                    editItem.target = self
+                    editItem.representedObject = schedule.id
+                    scheduleSubmenu.addItem(editItem)
+
+                    // Delete
+                    let deleteItem = NSMenuItem(title: "Delete", action: #selector(deleteScheduleAction(_:)), keyEquivalent: "")
+                    deleteItem.target = self
+                    deleteItem.representedObject = schedule.id
+                    scheduleSubmenu.addItem(deleteItem)
+
+                    // Schedule item with submenu
+                    let statusIcon = schedule.enabled ? "●" : "○"
+                    let scheduleItem = NSMenuItem(title: "\(statusIcon) \(schedule.name)", action: nil, keyEquivalent: "")
+                    scheduleItem.submenu = scheduleSubmenu
+                    schedulesMenu.addItem(scheduleItem)
+                }
+            }
+
+            let schedulesItem = NSMenuItem(title: "Schedules", action: nil, keyEquivalent: "")
+            schedulesItem.submenu = schedulesMenu
+            menu.addItem(schedulesItem)
+
+            menu.addItem(NSMenuItem.separator())
+
             // Pause/Resume
             let pauseItem = NSMenuItem(title: "Pause Daemon", action: #selector(togglePause), keyEquivalent: "p")
             pauseItem.target = self
@@ -655,6 +758,67 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showSetupWindow()
     }
 
+    @objc private func showScheduleEditor() {
+        showScheduleEditorWindow(schedule: nil)
+    }
+
+    @objc private func editScheduleAction(_ sender: NSMenuItem) {
+        guard let scheduleId = sender.representedObject as? String,
+              let schedule = schedules.first(where: { $0.id == scheduleId }) else { return }
+        showScheduleEditorWindow(schedule: schedule)
+    }
+
+    @objc private func toggleScheduleAction(_ sender: NSMenuItem) {
+        guard let scheduleId = sender.representedObject as? String else { return }
+        toggleSchedule(id: scheduleId)
+    }
+
+    @objc private func deleteScheduleAction(_ sender: NSMenuItem) {
+        guard let scheduleId = sender.representedObject as? String,
+              let schedule = schedules.first(where: { $0.id == scheduleId }) else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Delete Schedule?"
+        alert.informativeText = "Are you sure you want to delete \"\(schedule.name)\"? This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            deleteSchedule(id: scheduleId)
+        }
+    }
+
+    private func showScheduleEditorWindow(schedule: Schedule?) {
+        let editorView = ScheduleEditorView(
+            schedule: schedule,
+            onSave: { [weak self] newSchedule in
+                if schedule != nil {
+                    self?.updateSchedule(newSchedule)
+                } else {
+                    self?.addSchedule(newSchedule)
+                }
+                self?.scheduleWindowController?.close()
+                self?.scheduleWindowController = nil
+            },
+            onCancel: { [weak self] in
+                self?.scheduleWindowController?.close()
+                self?.scheduleWindowController = nil
+            }
+        )
+
+        let hostingController = NSHostingController(rootView: editorView)
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = schedule == nil ? "New Schedule" : "Edit Schedule"
+        window.setContentSize(NSSize(width: 500, height: 450))
+        window.styleMask = [.titled, .closable]
+        window.center()
+
+        scheduleWindowController = NSWindowController(window: window)
+        scheduleWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
     }
@@ -785,6 +949,262 @@ struct SetupView: View {
     }
 }
 
+// MARK: - Schedule Editor View
+
+struct ScheduleEditorView: View {
+    let schedule: Schedule?
+    let onSave: (Schedule) -> Void
+    let onCancel: () -> Void
+
+    @State private var name: String = ""
+    @State private var prompt: String = ""
+    @State private var selectedPreset: SchedulePreset = .daily
+    @State private var customCron: String = "0 * * * *"
+
+    // For preset configuration
+    @State private var hour: Int = 9
+    @State private var minute: Int = 0
+    @State private var dayOfWeek: Int = 1  // Monday
+    @State private var dayOfMonth: Int = 1
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // Header
+            Text(schedule == nil ? "New Scheduled Task" : "Edit Schedule")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            // Name field
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name")
+                    .font(.headline)
+                TextField("e.g., Daily Email Sync", text: $name)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            // Prompt field
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Claude Prompt")
+                    .font(.headline)
+                Text("What should Claude do when this runs?")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                TextEditor(text: $prompt)
+                    .font(.body)
+                    .frame(minHeight: 80)
+                    .border(Color.gray.opacity(0.3), width: 1)
+            }
+
+            // Schedule picker
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Schedule")
+                    .font(.headline)
+
+                Picker("Frequency", selection: $selectedPreset) {
+                    ForEach(SchedulePreset.allCases, id: \.self) { preset in
+                        Text(preset.rawValue).tag(preset)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                // Time configuration based on preset
+                HStack(spacing: 16) {
+                    switch selectedPreset {
+                    case .hourly:
+                        HStack {
+                            Text("At minute")
+                            Picker("", selection: $minute) {
+                                ForEach(0..<60, id: \.self) { m in
+                                    Text(String(format: "%02d", m)).tag(m)
+                                }
+                            }
+                            .frame(width: 70)
+                            Text("of every hour")
+                        }
+
+                    case .daily:
+                        HStack {
+                            Text("At")
+                            Picker("Hour", selection: $hour) {
+                                ForEach(0..<24, id: \.self) { h in
+                                    Text(String(format: "%02d", h)).tag(h)
+                                }
+                            }
+                            .frame(width: 70)
+                            Text(":")
+                            Picker("Minute", selection: $minute) {
+                                ForEach(0..<60, id: \.self) { m in
+                                    Text(String(format: "%02d", m)).tag(m)
+                                }
+                            }
+                            .frame(width: 70)
+                            Text("every day")
+                        }
+
+                    case .weekly:
+                        HStack {
+                            Text("Every")
+                            Picker("Day", selection: $dayOfWeek) {
+                                Text("Monday").tag(1)
+                                Text("Tuesday").tag(2)
+                                Text("Wednesday").tag(3)
+                                Text("Thursday").tag(4)
+                                Text("Friday").tag(5)
+                                Text("Saturday").tag(6)
+                                Text("Sunday").tag(0)
+                            }
+                            .frame(width: 120)
+                            Text("at")
+                            Picker("Hour", selection: $hour) {
+                                ForEach(0..<24, id: \.self) { h in
+                                    Text(String(format: "%02d", h)).tag(h)
+                                }
+                            }
+                            .frame(width: 70)
+                            Text(":")
+                            Picker("Minute", selection: $minute) {
+                                ForEach(0..<60, id: \.self) { m in
+                                    Text(String(format: "%02d", m)).tag(m)
+                                }
+                            }
+                            .frame(width: 70)
+                        }
+
+                    case .monthly:
+                        HStack {
+                            Text("Day")
+                            Picker("Day", selection: $dayOfMonth) {
+                                ForEach(1..<32, id: \.self) { d in
+                                    Text("\(d)").tag(d)
+                                }
+                            }
+                            .frame(width: 70)
+                            Text("at")
+                            Picker("Hour", selection: $hour) {
+                                ForEach(0..<24, id: \.self) { h in
+                                    Text(String(format: "%02d", h)).tag(h)
+                                }
+                            }
+                            .frame(width: 70)
+                            Text(":")
+                            Picker("Minute", selection: $minute) {
+                                ForEach(0..<60, id: \.self) { m in
+                                    Text(String(format: "%02d", m)).tag(m)
+                                }
+                            }
+                            .frame(width: 70)
+                        }
+
+                    case .custom:
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextField("Cron expression", text: $customCron)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.body, design: .monospaced))
+                            Text("Format: minute hour day month weekday")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Action buttons
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    onCancel()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button(schedule == nil ? "Create" : "Save") {
+                    let newSchedule = Schedule(
+                        id: schedule?.id ?? UUID().uuidString,
+                        name: name,
+                        prompt: prompt,
+                        cron: buildCronExpression(),
+                        enabled: schedule?.enabled ?? true,
+                        lastRun: schedule?.lastRun,
+                        createdAt: schedule?.createdAt
+                    )
+                    onSave(newSchedule)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.isEmpty || prompt.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 500, minHeight: 450)
+        .onAppear {
+            if let schedule = schedule {
+                name = schedule.name
+                prompt = schedule.prompt
+                parseCronExpression(schedule.cron)
+            }
+        }
+    }
+
+    private func buildCronExpression() -> String {
+        switch selectedPreset {
+        case .hourly:
+            return "\(minute) * * * *"
+        case .daily:
+            return "\(minute) \(hour) * * *"
+        case .weekly:
+            return "\(minute) \(hour) * * \(dayOfWeek)"
+        case .monthly:
+            return "\(minute) \(hour) \(dayOfMonth) * *"
+        case .custom:
+            return customCron
+        }
+    }
+
+    private func parseCronExpression(_ cron: String) {
+        let parts = cron.split(separator: " ")
+        guard parts.count == 5 else {
+            selectedPreset = .custom
+            customCron = cron
+            return
+        }
+
+        let minutePart = String(parts[0])
+        let hourPart = String(parts[1])
+        let dayPart = String(parts[2])
+        let monthPart = String(parts[3])
+        let weekdayPart = String(parts[4])
+
+        // Try to match to a preset
+        if hourPart == "*" && dayPart == "*" && monthPart == "*" && weekdayPart == "*" {
+            // Hourly
+            selectedPreset = .hourly
+            minute = Int(minutePart) ?? 0
+        } else if dayPart == "*" && monthPart == "*" && weekdayPart == "*" {
+            // Daily
+            selectedPreset = .daily
+            minute = Int(minutePart) ?? 0
+            hour = Int(hourPart) ?? 9
+        } else if dayPart == "*" && monthPart == "*" && weekdayPart != "*" {
+            // Weekly
+            selectedPreset = .weekly
+            minute = Int(minutePart) ?? 0
+            hour = Int(hourPart) ?? 9
+            dayOfWeek = Int(weekdayPart) ?? 1
+        } else if dayPart != "*" && monthPart == "*" && weekdayPart == "*" {
+            // Monthly
+            selectedPreset = .monthly
+            minute = Int(minutePart) ?? 0
+            hour = Int(hourPart) ?? 9
+            dayOfMonth = Int(dayPart) ?? 1
+        } else {
+            // Custom
+            selectedPreset = .custom
+            customCron = cron
+        }
+    }
+}
+
 // MARK: - Models
 
 enum IconState {
@@ -838,4 +1258,48 @@ struct ClaudeConfig: Codable {
     let command: String
     let args: [String]
     let timeout_ms: Int
+}
+
+// MARK: - Schedule Models
+
+struct Schedule: Codable, Identifiable {
+    var id: String
+    var name: String
+    var prompt: String
+    var cron: String
+    var enabled: Bool
+    var lastRun: String?
+    var createdAt: String
+
+    init(id: String = UUID().uuidString, name: String, prompt: String, cron: String, enabled: Bool = true, lastRun: String? = nil, createdAt: String? = nil) {
+        self.id = id
+        self.name = name
+        self.prompt = prompt
+        self.cron = cron
+        self.enabled = enabled
+        self.lastRun = lastRun
+        self.createdAt = createdAt ?? ISO8601DateFormatter().string(from: Date())
+    }
+}
+
+struct SchedulesFile: Codable {
+    var schedules: [Schedule]
+}
+
+enum SchedulePreset: String, CaseIterable {
+    case hourly = "Every Hour"
+    case daily = "Every Day"
+    case weekly = "Every Week"
+    case monthly = "Every Month"
+    case custom = "Custom"
+
+    var defaultCron: String {
+        switch self {
+        case .hourly: return "0 * * * *"
+        case .daily: return "0 9 * * *"
+        case .weekly: return "0 9 * * 1"
+        case .monthly: return "0 9 1 * *"
+        case .custom: return "0 * * * *"
+        }
+    }
 }

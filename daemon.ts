@@ -6,6 +6,7 @@ import { readdir, readFile, writeFile, rename, stat, appendFile, truncate } from
 import { join, relative, basename, dirname } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
+import { Cron } from "croner";
 
 // =============================================================================
 // Types
@@ -45,6 +46,26 @@ interface ResolvedConfig extends Omit<Config, "vault_path" | "log_path" | "state
   };
 }
 
+interface Schedule {
+  id: string;
+  name: string;
+  prompt: string;
+  cron: string;
+  enabled: boolean;
+  lastRun?: string;
+  createdAt: string;
+}
+
+interface SchedulesFile {
+  schedules: Schedule[];
+}
+
+interface ScheduledNext {
+  id: string;
+  name: string;
+  time: string;
+}
+
 interface DaemonState {
   status: "idle" | "working" | "blocked" | "paused" | "error";
   active_tasks: number;
@@ -52,6 +73,8 @@ interface DaemonState {
   last_error: string | null;
   tasks_completed_today: number;
   agent_commands_today: number;
+  scheduled_next?: ScheduledNext | null;
+  scheduled_count?: number;
 }
 
 interface TaskInfo {
@@ -67,6 +90,8 @@ type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
 // =============================================================================
 
 const CONFIG_PATH = join(import.meta.dir, "config.json");
+const SCHEDULES_PATH = join(homedir(), ".vault-daemon-schedules.json");
+
 let config: ResolvedConfig;
 let state: DaemonState = {
   status: "idle",
@@ -75,11 +100,17 @@ let state: DaemonState = {
   last_error: null,
   tasks_completed_today: 0,
   agent_commands_today: 0,
+  scheduled_next: null,
+  scheduled_count: 0,
 };
 
 const taskQueue: TaskInfo[] = [];
 const activeProcesses: Map<string, Subprocess> = new Map();
 const pendingDebounces: Map<string, Timer> = new Map();
+
+// Scheduler state
+let schedules: Schedule[] = [];
+const activeCronJobs: Map<string, Cron> = new Map();
 
 // =============================================================================
 // Logging
@@ -127,6 +158,157 @@ async function saveState(): Promise<void> {
 function updateState(updates: Partial<DaemonState>): void {
   state = { ...state, ...updates };
   saveState();
+}
+
+// =============================================================================
+// Scheduling System
+// =============================================================================
+
+async function loadSchedules(): Promise<void> {
+  try {
+    if (existsSync(SCHEDULES_PATH)) {
+      const content = await readFile(SCHEDULES_PATH, "utf-8");
+      const data: SchedulesFile = JSON.parse(content);
+      schedules = data.schedules || [];
+      await log("INFO", `Loaded ${schedules.length} schedules`);
+    } else {
+      schedules = [];
+      // Create empty schedules file
+      await writeFile(SCHEDULES_PATH, JSON.stringify({ schedules: [] }, null, 2));
+      await log("INFO", "Created empty schedules file");
+    }
+  } catch (err) {
+    await log("ERROR", `Failed to load schedules: ${err}`);
+    schedules = [];
+  }
+}
+
+async function saveSchedules(): Promise<void> {
+  try {
+    await writeFile(SCHEDULES_PATH, JSON.stringify({ schedules }, null, 2));
+  } catch (err) {
+    await log("ERROR", `Failed to save schedules: ${err}`);
+  }
+}
+
+function getNextScheduledRun(): ScheduledNext | null {
+  let nextRun: { schedule: Schedule; time: Date } | null = null;
+
+  for (const schedule of schedules) {
+    if (!schedule.enabled) continue;
+
+    try {
+      const cron = new Cron(schedule.cron);
+      const next = cron.nextRun();
+
+      if (next && (!nextRun || next < nextRun.time)) {
+        nextRun = { schedule, time: next };
+      }
+    } catch {
+      // Invalid cron expression
+    }
+  }
+
+  if (nextRun) {
+    return {
+      id: nextRun.schedule.id,
+      name: nextRun.schedule.name,
+      time: nextRun.time.toISOString(),
+    };
+  }
+
+  return null;
+}
+
+function updateScheduledNext(): void {
+  const next = getNextScheduledRun();
+  const enabledCount = schedules.filter(s => s.enabled).length;
+  updateState({
+    scheduled_next: next,
+    scheduled_count: enabledCount,
+  });
+}
+
+async function executeScheduledTask(schedule: Schedule): Promise<void> {
+  await log("INFO", `Executing scheduled task: ${schedule.name}`);
+
+  // Create a task file in Inbox with [scheduled] prefix
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const safeName = schedule.name.replace(/[^a-zA-Z0-9-_ ]/g, "").slice(0, 30);
+  const taskFileName = `[scheduled] ${safeName} ${timestamp}.md`;
+  const taskPath = join(config.vault_path, "Tasks", "Inbox", taskFileName);
+
+  const taskContent = `---
+scheduled_task: ${schedule.id}
+scheduled_name: ${schedule.name}
+scheduled_at: ${new Date().toISOString()}
+---
+
+${schedule.prompt}
+`;
+
+  try {
+    await writeFile(taskPath, taskContent);
+    await log("INFO", `Created scheduled task file: ${taskFileName}`);
+
+    // Update lastRun
+    schedule.lastRun = new Date().toISOString();
+    await saveSchedules();
+    updateScheduledNext();
+  } catch (err) {
+    await log("ERROR", `Failed to create scheduled task: ${err}`);
+  }
+}
+
+async function setupScheduler(): Promise<void> {
+  // Stop any existing cron jobs
+  for (const [id, job] of activeCronJobs) {
+    job.stop();
+  }
+  activeCronJobs.clear();
+
+  // Create cron jobs for each enabled schedule
+  for (const schedule of schedules) {
+    if (!schedule.enabled) continue;
+
+    try {
+      const job = new Cron(schedule.cron, async () => {
+        await executeScheduledTask(schedule);
+      });
+
+      activeCronJobs.set(schedule.id, job);
+
+      const nextRun = job.nextRun();
+      await log("INFO", `Scheduled "${schedule.name}" - next run: ${nextRun?.toLocaleString() || "unknown"}`);
+    } catch (err) {
+      await log("ERROR", `Invalid cron for schedule "${schedule.name}": ${schedule.cron}`);
+    }
+  }
+
+  updateScheduledNext();
+  await log("INFO", `Scheduler started with ${activeCronJobs.size} active schedules`);
+}
+
+function setupScheduleFileWatcher(): void {
+  const watcher = watch(SCHEDULES_PATH, {
+    ignoreInitial: true,
+    awaitWriteFinish: {
+      stabilityThreshold: 500,
+      pollInterval: 100,
+    },
+  });
+
+  watcher.on("change", async () => {
+    await log("INFO", "Schedules file changed, reloading...");
+    await loadSchedules();
+    await setupScheduler();
+  });
+
+  watcher.on("add", async () => {
+    await log("INFO", "Schedules file created, loading...");
+    await loadSchedules();
+    await setupScheduler();
+  });
 }
 
 // =============================================================================
@@ -658,6 +840,11 @@ async function main(): Promise<void> {
   // Initialize state
   updateState({ status: "idle" });
 
+  // Load schedules and setup scheduler
+  await loadSchedules();
+  await setupScheduler();
+  setupScheduleFileWatcher();
+
   // Setup watchers
   if (config.tasks.enabled) {
     setupTaskWatcher();
@@ -674,6 +861,11 @@ async function main(): Promise<void> {
     await log("INFO", "Shutting down...");
     updateState({ status: "paused" });
 
+    // Stop all cron jobs
+    for (const [id, job] of activeCronJobs) {
+      job.stop();
+    }
+
     // Kill any active processes
     for (const [name, proc] of activeProcesses) {
       await log("INFO", `Killing task: ${name}`);
@@ -686,6 +878,12 @@ async function main(): Promise<void> {
   process.on("SIGTERM", async () => {
     await log("INFO", "Received SIGTERM, shutting down...");
     updateState({ status: "paused" });
+
+    // Stop all cron jobs
+    for (const [id, job] of activeCronJobs) {
+      job.stop();
+    }
+
     process.exit(0);
   });
 }
