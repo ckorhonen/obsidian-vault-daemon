@@ -13,31 +13,49 @@ A background daemon that monitors your Obsidian vault and executes Claude Code t
 
 ## Requirements
 
-- **macOS** (Linux support planned)
-- **Bun** runtime (>= 1.0)
-- **Claude CLI** (`@anthropic-ai/claude-code`)
+- **macOS 12+** (Linux support planned)
+- **Claude CLI** (`npm install -g @anthropic-ai/claude-code`)
 - An Obsidian vault
 
 ## Quick Start
 
 ```bash
-# Clone the repo
 git clone https://github.com/ckorhonen/obsidian-vault-daemon.git
 cd obsidian-vault-daemon
-
-# Install dependencies
-bun install
-
-# Copy and configure
-cp config.example.json config.json
-# Edit config.json to set your vault_path (or leave as "auto" if installing in vault)
-
-# Test run (foreground)
-bun run daemon.ts
-
-# Install as LaunchAgent (auto-start on login)
 ./install.sh
 ```
+
+That's it! The installer will:
+1. Install Bun (if needed)
+2. Install dependencies
+3. Build the menubar app
+4. Launch the setup wizard to select your vault
+
+Look for the **◎** icon in your menubar to complete setup.
+
+---
+
+## What the Installer Does
+
+```
+./install.sh
+    │
+    ├── Check/install Bun runtime
+    ├── Install Node dependencies (bun install)
+    ├── Build menubar app (Swift)
+    ├── Install to /Applications/
+    └── Launch menubar app
+            │
+            └── First-run setup wizard
+                    ├── Auto-detect Obsidian vaults
+                    ├── Create Tasks folders
+                    ├── Install LaunchAgent
+                    └── Start daemon
+```
+
+After setup, the daemon runs automatically on login.
+
+---
 
 ## Architecture
 
@@ -78,130 +96,13 @@ bun run daemon.ts
 
 ---
 
-## Installation
-
-### Prerequisites
-
-```bash
-# Install Bun
-curl -fsSL https://bun.sh/install | bash
-
-# Install Claude CLI
-npm install -g @anthropic-ai/claude-code
-
-# Verify
-bun --version
-claude --version
-```
-
-### Clone & Setup
-
-```bash
-git clone https://github.com/ckorhonen/obsidian-vault-daemon.git
-cd obsidian-vault-daemon
-
-# Install Node dependencies
-bun install
-
-# Create config from example
-cp config.example.json config.json
-```
-
-### Configure
-
-Edit `config.json`:
-
-```json
-{
-  "vault_path": "/path/to/your/obsidian/vault",
-  "log_path": "auto",
-  "log_max_size_mb": 1,
-  "state_path": "auto",
-
-  "tasks": {
-    "enabled": true,
-    "debounce_ms": 5000,
-    "max_concurrent": 2
-  },
-
-  "agent_tags": {
-    "enabled": true,
-    "scan_interval_ms": 180000,
-    "debounce_ms": 30000,
-    "ignore_patterns": [
-      "Tasks/**",
-      ".obsidian/**",
-      "**/node_modules/**"
-    ]
-  },
-
-  "claude": {
-    "command": "auto",
-    "args": ["--dangerously-skip-permissions"],
-    "timeout_ms": 300000
-  }
-}
-```
-
-**Path auto-resolution:**
-- `vault_path: "auto"` - Uses parent of daemon directory (for in-vault installation)
-- `log_path: "auto"` - Uses `~/Library/Logs/vault-daemon.log` on macOS
-- `state_path: "auto"` - Uses `~/.vault-daemon-state.json`
-- `claude.command: "auto"` - Finds Claude CLI automatically
-
-### Create Vault Folders
-
-```bash
-# In your Obsidian vault, create the task folders:
-mkdir -p "Tasks/Inbox" "Tasks/In Progress" "Tasks/Blocked" "Tasks/Completed"
-```
-
-### Install LaunchAgent (Auto-Start)
-
-```bash
-./install.sh
-```
-
-This will:
-1. Generate a LaunchAgent plist for your user
-2. Install it to `~/Library/LaunchAgents/`
-3. Load the daemon
-
-### Verify Installation
-
-```bash
-# Check daemon is running
-launchctl list | grep vault-daemon
-
-# Check logs
-tail -f ~/Library/Logs/vault-daemon.log
-
-# Test task execution
-echo "List the files in the Research folder" > "/path/to/vault/Tasks/Inbox/test-task.md"
-```
-
----
-
-## Menubar App (Optional)
-
-A native macOS menubar app for controlling the daemon.
-
-### Build
-
-```bash
-cd menubar-app
-./build.sh
-```
-
-### Install
-
-1. Move `VaultDaemon.app` to `/Applications/`
-2. Add to Login Items: System Settings → General → Login Items → Add "VaultDaemon"
+## Menubar App
 
 ### Status Icons
 
 | Icon | State |
 |------|-------|
+| `◎` | Setup required - first run |
 | `◉` | Idle - daemon running, no active tasks |
 | `◐` | Working - processing task(s) |
 | `◍` | Blocked - task waiting for input |
@@ -213,10 +114,13 @@ cd menubar-app
 | Option | Description |
 |--------|-------------|
 | **Status** | Current state + active task count |
+| **Vault** | Currently configured vault |
 | **View Logs** | Opens log file in Console.app |
 | **View Tasks** | Opens Tasks folder in Finder |
+| **Open Vault** | Opens vault folder in Finder |
 | **Force Scan** | Immediate @agent scan |
-| **Pause/Resume** | Toggle LaunchAgent |
+| **Pause/Resume** | Toggle daemon |
+| **Change Vault** | Reconfigure vault location |
 | **Quit** | Stop menubar app (daemon continues) |
 
 ---
@@ -350,11 +254,51 @@ The scanner automatically ignores:
 
 ---
 
-## Configuration Reference
+## Configuration
+
+Configuration is stored in two places:
+- `~/.vault-daemon-config.json` - Used by menubar app
+- `config.json` in daemon directory - Used by daemon
+
+The menubar app manages both automatically. For manual configuration:
+
+```json
+{
+  "vault_path": "/path/to/your/obsidian/vault",
+  "log_path": "auto",
+  "log_max_size_mb": 1,
+  "state_path": "auto",
+
+  "tasks": {
+    "enabled": true,
+    "debounce_ms": 5000,
+    "max_concurrent": 2
+  },
+
+  "agent_tags": {
+    "enabled": true,
+    "scan_interval_ms": 180000,
+    "debounce_ms": 30000,
+    "ignore_patterns": [
+      "Tasks/**",
+      ".obsidian/**",
+      "**/node_modules/**"
+    ]
+  },
+
+  "claude": {
+    "command": "auto",
+    "args": ["--dangerously-skip-permissions"],
+    "timeout_ms": 300000
+  }
+}
+```
+
+### Configuration Reference
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `vault_path` | string | `"auto"` | Path to Obsidian vault |
+| `vault_path` | string | - | Path to Obsidian vault |
 | `log_path` | string | `"auto"` | Path to log file |
 | `log_max_size_mb` | number | `1` | Max log file size before rotation |
 | `state_path` | string | `"auto"` | Path to daemon state file |
@@ -364,21 +308,29 @@ The scanner automatically ignores:
 | `agent_tags.enabled` | boolean | `true` | Enable @agent tag scanning |
 | `agent_tags.scan_interval_ms` | number | `180000` | Periodic scan interval (3 min) |
 | `agent_tags.debounce_ms` | number | `30000` | Debounce for file change scans |
-| `agent_tags.ignore_patterns` | string[] | See example | Glob patterns to ignore |
+| `agent_tags.ignore_patterns` | string[] | See above | Glob patterns to ignore |
 | `claude.command` | string | `"auto"` | Claude CLI path or "auto" |
 | `claude.args` | string[] | `["--dangerously-skip-permissions"]` | Claude CLI arguments |
 | `claude.timeout_ms` | number | `300000` | Task timeout (5 min) |
+
+**Path auto-resolution:**
+- `log_path: "auto"` → `~/Library/Logs/vault-daemon.log`
+- `state_path: "auto"` → `~/.vault-daemon-state.json`
+- `claude.command: "auto"` → Finds Claude CLI automatically
 
 ---
 
 ## Manual Control
 
 ```bash
-# Start daemon (foreground)
+# Start daemon (foreground, for debugging)
 bun run daemon.ts
 
-# Stop daemon (if using LaunchAgent)
+# Stop daemon
 launchctl unload ~/Library/LaunchAgents/com.vault-daemon.plist
+
+# Start daemon
+launchctl load ~/Library/LaunchAgents/com.vault-daemon.plist
 
 # Restart daemon
 launchctl unload ~/Library/LaunchAgents/com.vault-daemon.plist
@@ -415,6 +367,7 @@ launchctl list | grep vault-daemon
 | Sync conflicts | Increase debounce times in config |
 | High CPU | Reduce scan frequency, add ignore patterns |
 | Menubar app shows "Stopped" | Run `launchctl load ~/Library/LaunchAgents/com.vault-daemon.plist` |
+| Setup wizard doesn't appear | Delete `~/.vault-daemon-config.json` and relaunch app |
 
 ---
 
@@ -435,7 +388,7 @@ launchctl unload ~/Library/LaunchAgents/com.vault-daemon.plist
 rm ~/Library/LaunchAgents/com.vault-daemon.plist
 
 # Remove menubar app
-rm -rf /Applications/VaultDaemon.app
+rm -rf "/Applications/Vault Daemon.app"
 
 # Remove state files
 rm ~/.vault-daemon-state.json
