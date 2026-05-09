@@ -486,3 +486,7 @@ MIT License - see [LICENSE](LICENSE)
 
 - [Claude Code](https://github.com/anthropics/claude-code) - Claude CLI
 - [Obsidian](https://obsidian.md) - Knowledge base app
+
+## Agent Workflow
+
+Canonical agent instructions live in [AGENTS.md](AGENTS.md). Repo-local agent infrastructure lives in [.agents/](.agents/); compatible `.codex` and `.claude` entrypoints point there when they can do so without overwriting existing tool state.
